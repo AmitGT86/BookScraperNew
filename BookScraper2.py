@@ -1,68 +1,64 @@
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
+import csv
 import os
 
-BASE_URL = "http://books.toscrape.com/"
+# Base URL of the site to scrape
+BASE_URL = 'http://books.toscrape.com/'
 
-def scrape_book_details(book_url):
-    response = requests.get(book_url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    title = soup.find('h1').text
-    price = soup.find('p', class_='price_color').text
-    stock = soup.find('p', class_='instock availability').text.strip()
-    description = soup.find('meta', attrs={'name': 'description'})['content'].strip()
-    category = soup.find('ul', class_='breadcrumb').find_all('a')[2].text.strip()
-    rating = soup.find('p', class_='star-rating')['class'][1]
-    return {
-        'title': title,
-        'price': price,
-        'stock': stock,
-        'description': description,
-        'category': category,
-        'rating': rating
-    }
+# Ensure the directory for CSVs exists
+CSV_DIR = 'all_csvs'
+os.makedirs(CSV_DIR, exist_ok=True)
 
-def get_category_urls():
-    url = BASE_URL + "index.html"
+def get_soup(url):
+    """Return a BeautifulSoup object for a given URL."""
     response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    return {a.text.strip(): BASE_URL + a['href'] for a in soup.find('div', class_='side_categories').find('ul').find('li').find_all('a')}
+    response.raise_for_status()  # Raises an HTTPError if the response was an error
+    return BeautifulSoup(response.text, 'html.parser')
 
-def scrape_category(category_name, category_url):
+def get_category_links():
+    """Retrieve a dictionary of book categories and their URLs."""
+    soup = get_soup(BASE_URL)
+    category_links = {}
+    for category in soup.find('div', class_='side_categories').find_all('a')[1:]:  # Skip the first one as it's 'Books'
+        name = category.get_text().strip()
+        link = BASE_URL + category['href']
+        category_links[name] = link
+    return category_links
+
+def scrape_books(category, url):
+    """Scrape book details from a given category page."""
     books = []
-    while category_url:
-        response = requests.get(category_url)
-        soup = BeautifulSoup(response.content, 'html.parser')
+    while True:
+        soup = get_soup(url)
+        for article in soup.find_all('article', class_='product_pod'):
+            title = article.find('h3').find('a')['title']
+            price = article.find('p', class_='price_color').text[1:]  # Remove currency symbol
+            availability = article.find('p', class_='instock availability').text.strip()
+            books.append([title, price, availability])
         
-        
-        book_urls = [BASE_URL + 'catalogue/' + a.find('a')['href'].replace('../', '') for a in soup.find_all('h3')]
-        
-        for book_url in book_urls:
-            books.append(scrape_book_details(book_url))
-        
-        next_button = soup.find("li", class_="next")
+        next_button = soup.find('li', class_='next')
         if next_button:
-            next_page_partial_url = next_button.find("a")["href"]
-            category_url = '/'.join(category_url.split('/')[:-1]) + '/' + next_page_partial_url
+            url = BASE_URL + 'catalogue/' + next_button.find('a')['href']
         else:
-            category_url = None
-
+            break
     return books
 
-
-def save_to_csv(books, category_name):
-    df = pd.DataFrame(books)
-    filename = f'{category_name.replace(" ", "_").lower()}.csv'
-    df.to_csv(filename, index=False)
+def write_books_to_csv(category, books):
+    """Write books of a specific category to a CSV file."""
+    filename = os.path.join(CSV_DIR, f'{category}.csv')
+    with open(filename, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Title', 'Price', 'Availability'])
+        writer.writerows(books)
+    print(f'Saved {len(books)} books in {filename}')
 
 def main():
-    categories = get_category_urls()
-    for category_name, category_url in categories.items():
-        print(f"Processing category: {category_name}")
-        books = scrape_category(category_name, category_url)
-        save_to_csv(books, category_name)
-        print(f"Finished processing {category_name}. Data saved to CSV.")
+    category_links = get_category_links()
+    for category, url in category_links.items():
+        print(f'Scraping category: {category}')
+        books = scrape_books(category, url)
+        write_books_to_csv(category, books)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
